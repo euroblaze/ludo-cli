@@ -1,24 +1,25 @@
 # omg
 
 **omg** is the command-line client for **LUDO** — autonomous Odoo cross-version
-migration. It is a **transport-only client**: it talks to a LUDO deployment over a
-stable API and event stream, and contains **no migration engine and no Odoo
+migration. It is a **transport-only client**: it talks to the LUDO **gateway** over a
+stable API + event stream, and contains **no migration engine and no Odoo
 credentials**. Think `kubectl` / `stripe` / `gh` — a thin client for a backend that
 runs elsewhere.
 
 ```
-omg  ──▶  Contract A (REST) + Contract B (events)  ──▶  your LUDO deployment (engine)
+omg  ──▶  gateway (Contract A REST + Contract B SSE)  ──▶  NATS  ──▶  agent (private)
           public schemas only · no engine code · auth-gated
 ```
 
-You point `omg` at **your own** LUDO deployment and authenticate to it; the engine,
-your Odoo credentials, and your data never live in this CLI.
+The gateway ([`euroblaze/ludo-gateway`](https://github.com/euroblaze/ludo-gateway)) is the
+single public door; `omg` never reaches the agent or the broker directly. You point it at
+**your own** deployment's gateway and authenticate; the engine, your Odoo credentials, and
+your data never live in this CLI.
 
 ## Status
 
-Early scaffold (P1). Read commands work against a deployment's read-only API today;
-write commands (migrate / estimate / rollback / …) arrive once the deployment's
-job-submission transport lands. Build tracked in
+Read commands work against the gateway today (P3); write commands (approve / job submit)
+arrive once the gated broker write path is cleared (P4). Build tracked in
 [ludo-omg#1](https://github.com/euroblaze/ludo-omg/issues/1).
 
 ## Install
@@ -29,29 +30,30 @@ pipx install .        # from a checkout (PyPI release later)
 
 ## Configure
 
-`omg` needs to know where your deployment is and how to authenticate:
+`omg` needs to know where your gateway is and how to authenticate:
 
 ```sh
-export LUDO_API_URL=http://10.0.99.1:8000   # your deployment's API
-export LUDO_API_TOKEN=…                      # bearer token (optional in dev)
+export LUDO_API_URL=http://10.0.99.1:8080   # your deployment's gateway
+export LUDO_API_TOKEN=…                      # bearer token (anon = 404 on tenant data)
 ```
 
 ## Use
 
 ```sh
-omg version          # client version + deployment health
-omg status           # recent sessions
-omg status <id>      # one session's status
-omg config           # show resolved config (token redacted)
+omg version             # client version + gateway health/env
+omg migrations          # list your migrations
+omg migrations <id>     # one migration's detail
+omg events <id>         # stream the migration's resumable event log (SSE)
+omg config              # show resolved config (token redacted)
 ```
 
 ## How it's built
 
 - **No engine code.** CI fails the build on any private engine import — `omg` only
-  ever speaks the public contracts under [`contracts/`](contracts/).
+  ever speaks the gateway's public contracts under [`contracts/`](contracts/).
 - **Public seam.** `contracts/openapi.yaml` (Contract A) and
-  `session-event.schema.json` (Contract B) are vendored copies; the source of truth
-  is private and published on intentional contract releases.
+  `session-event.schema.json` (Contract B) are vendored from the gateway; the source
+  of truth is `euroblaze/ludo-gateway`, published on intentional contract releases.
 
 ## License
 

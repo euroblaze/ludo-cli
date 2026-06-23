@@ -1,13 +1,14 @@
 # Public contracts
 
-The stable seam between this public CLI and a (private) LUDO deployment. The CLI
-depends **only** on what's here — never on engine code.
+The stable seam between this public CLI and the LUDO **gateway** (the single public
+door over the broker). The CLI depends **only** on what's here — never on the agent
+or NATS.
 
-- `openapi.yaml` — **Contract A** (REST): the deployment's read-only API now, plus
-  job-submission endpoints as they land. *(vendored in P2)*
+- `openapi.yaml` — **Contract A** (REST + SSE): the gateway's public API — migrations
+  (list / detail / approve) + resumable event stream + health/status.
 - `session-event.schema.json` — **Contract B** (events): the lifecycle event envelope
-  the CLI consumes when streaming a job. *(vendored in P2)*
+  the CLI consumes when streaming a migration.
 
-**Source of truth is private** (the engine repo). These files are *published copies*,
-synced on intentional contract releases — so the private side controls exactly which
-schema version becomes public, and when. Do not hand-edit; regenerate from the source.
+**Source of truth is the gateway** (`euroblaze/ludo-gateway/contracts/`). These files
+are *published copies* synced on intentional contract releases. Do not hand-edit;
+re-vendor from the gateway.
