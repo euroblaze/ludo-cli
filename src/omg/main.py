@@ -1,14 +1,14 @@
 """omg — transport-only CLI for LUDO Odoo migrations.
 
-Talks to a LUDO deployment over its public API; contains no engine code.
-Read commands work against the deployment's read-only API today; write
-commands (migrate/estimate/rollback/...) arrive in P4 once the deployment's
-job-ingress (broker) transport lands — they will submit jobs and stream
-Contract B events, never run an engine in-process.
+Talks to the LUDO **gateway** (the single public door over the broker); contains
+no engine code and never reaches the agent or NATS directly. Read commands work
+today; write commands (approve / job submit) land in P4 once the gated broker
+write path is cleared.
 """
 
 from __future__ import annotations
 
+import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -16,75 +16,76 @@ from rich.table import Table
 from omg import __version__
 from omg.client import LudoClient
 from omg.config import load_config
-from omg.knowledge import knowledge_app
 
 app = typer.Typer(
     name="omg",
     help="omg — CLI client for LUDO Odoo migrations (transport-only).",
     no_args_is_help=True,
 )
-app.add_typer(knowledge_app, name="knowledge")
 console = Console()
+
+
+def _fail(exc: httpx.HTTPError) -> None:
+    """Turn a transport error into a clean message + non-zero exit (no traceback)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        console.print(f"[red]error {exc.response.status_code}:[/red] {exc.response.text.strip()[:200]}")
+    else:
+        console.print(f"[red]cannot reach gateway:[/red] {type(exc).__name__}: {exc}")
+    raise typer.Exit(1)
 
 
 @app.command()
 def version() -> None:
-    """Show the omg client version and, if reachable, deployment health."""
+    """Show the omg client version and, if reachable, gateway health + env."""
     console.print(f"omg {__version__}")
     cfg = load_config()
     try:
         with LudoClient(cfg) as client:
             health = client.healthz()
-        console.print(f"deployment [cyan]{cfg.api_url}[/cyan]: {health}")
-    except Exception as exc:  # unreachable deployment is informational, not fatal
-        console.print(f"[yellow]deployment {cfg.api_url} unreachable:[/yellow] {type(exc).__name__}: {exc}")
+            status = client.system_status()
+        console.print(f"gateway [cyan]{cfg.api_url}[/cyan]: {health} {status}")
+    except Exception as exc:  # unreachable gateway is informational, not fatal
+        console.print(f"[yellow]gateway {cfg.api_url} unreachable:[/yellow] {type(exc).__name__}: {exc}")
 
 
 @app.command()
-def status(session_id: str = typer.Argument("", help="Session id; empty lists recent sessions.")) -> None:
-    """Read migration/session status from the deployment (read-only API)."""
+def migrations(migration_id: str = typer.Argument("", help="Migration id; empty lists your migrations.")) -> None:
+    """List your migrations, or show one migration's detail (gateway, tenant-scoped)."""
     cfg = load_config()
-    with LudoClient(cfg) as client:
-        data: object = client.get_session(session_id) if session_id else client.list_sessions()
-    console.print_json(data=data)
-
-
-@app.command()
-def blueprints(session_id: str = typer.Argument("", help="Session id; empty lists blueprint keys.")) -> None:
-    """List stored blueprints, or show one session's blueprint."""
-    cfg = load_config()
-    with LudoClient(cfg) as client:
-        data: object = client.blueprint(session_id) if session_id else client.blueprints()
-    console.print_json(data=data)
-
-
-@app.command()
-def wiki(
-    path: str = typer.Argument("", help="Wiki page path (e.g. episodic/customers/x.md); empty lists a category."),
-    category: str = typer.Option("customers", "--category", "-c", help="Category to list when no path is given."),
-) -> None:
-    """List wiki pages in a category, or read one page."""
-    cfg = load_config()
-    with LudoClient(cfg) as client:
-        data: object = client.wiki_page(path) if path else client.wiki_list(category)
-    console.print_json(data=data)
-
-
-@app.command()
-def surprises(customer_id: str = typer.Option("", "--customer", help="Scope to one customer (account_id).")) -> None:
-    """Intervention-type summary across sessions (the human-touchpoint metric)."""
-    cfg = load_config()
-    with LudoClient(cfg) as client:
-        data = client.surprises(customer_id or None)
-    if not data:
-        console.print("[dim]No interventions recorded.[/dim]")
+    try:
+        with LudoClient(cfg) as client:
+            if migration_id:
+                console.print_json(data=client.get_migration(migration_id))
+                return
+            data = client.list_migrations()
+    except httpx.HTTPError as exc:
+        _fail(exc)
+    items = data.get("items") or []
+    if not items:
+        console.print("[dim]No migrations.[/dim]")
         return
-    table = Table(title="Surprises (intervention types)")
-    table.add_column("type", style="cyan")
-    table.add_column("count", justify="right")
-    for kind, count in sorted(data.items()):
-        table.add_row(kind, str(count))
+    table = Table(title=f"Migrations ({len(items)})")
+    table.add_column("id", style="cyan")
+    table.add_column("state", justify="right")
+    table.add_column("account")
+    for m in items:
+        table.add_row(str(m.get("id", "")), str(m.get("state_index", m.get("state", ""))), str(m.get("account_id", "")))
     console.print(table)
+
+
+@app.command()
+def events(
+    migration_id: str = typer.Argument(..., help="Migration id to stream."),
+    resume_from: int = typer.Option(0, "--resume-from", help="Resume from this stream seq (Last-Event-ID)."),
+) -> None:
+    """Stream a migration's resumable event log (Contract B SSE) until it ends."""
+    cfg = load_config()
+    try:
+        with LudoClient(cfg) as client:
+            for seq, etype, payload in client.stream_events(migration_id, last_event_id=resume_from or None):
+                console.print(f"[dim]{seq:>4}[/dim] [cyan]{etype}[/cyan] {payload}")
+    except httpx.HTTPError as exc:
+        _fail(exc)
 
 
 @app.command()

@@ -1,12 +1,14 @@
-"""CLI configuration — the deployment endpoint + auth token.
+"""CLI configuration — the gateway endpoint + auth token.
 
-The transport-only CLI knows only *where* a LUDO deployment is and *how* to
-authenticate to it. It never holds Odoo credentials (those live in the
-deployment) and imports no engine code.
+The transport-only CLI knows only *where* the LUDO **gateway** is and *how* to
+authenticate to it. The gateway (euroblaze/ludo-gateway) is the single public
+door in front of the broker; omg never reaches the agent or NATS directly, holds
+no Odoo credentials, and imports no engine code.
 
 Resolution order (per field): environment variable, else default.
-  LUDO_API_URL    base URL of the deployment's read-only API (Contract A)
-  LUDO_API_TOKEN  bearer token for that deployment (optional in dev)
+  LUDO_API_URL    base URL of the gateway (Contract A); root holds /healthz,
+                  the rest is under /api/v1
+  LUDO_API_TOKEN  bearer token for that deployment (anon is 404 on tenant data)
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ import os
 from dataclasses import dataclass
 
 # House rule: address deployments by the loopback alias, never localhost.
-DEFAULT_API_URL = "http://10.0.99.1:8000"
+# Default = the gateway's public edge port.
+DEFAULT_API_URL = "http://10.0.99.1:8080"
 
 
 @dataclass(frozen=True)
